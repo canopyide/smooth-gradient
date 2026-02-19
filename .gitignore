@@ -18,6 +18,7 @@ build/
 out/
 .next/
 .nuxt/
+*.tsbuildinfo
 
 # OS
 .DS_Store

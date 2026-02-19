@@ -1,0 +1,79 @@
+{
+  "name": "@canopyide/smooth-gradient",
+  "version": "0.1.0",
+  "description": "Smooth, band-free canvas gradient rendering with TPDF dithering, Oklab interpolation, and WebGL acceleration",
+  "author": "Greg Priday <greg@priday.org>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/canopyide/smooth-gradient.git"
+  },
+  "keywords": [
+    "gradient",
+    "dither",
+    "dithering",
+    "canvas",
+    "webgl",
+    "oklab",
+    "banding",
+    "noise",
+    "ign",
+    "blue-noise",
+    "tpdf",
+    "anti-banding",
+    "vignette",
+    "background"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.js"
+    },
+    "./svelte": {
+      "types": "./dist/svelte/index.d.ts",
+      "svelte": "./src/svelte/DitheredBackground.svelte",
+      "import": "./dist/svelte/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src/svelte",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@sveltejs/package": "^2.3.0",
+    "@types/react": "^19.0.0",
+    "react": "^19.0.0",
+    "svelte": "^5.0.0",
+    "tsup": "^8.4.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "svelte": ">=4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "svelte": {
+      "optional": true
+    }
+  },
+  "sideEffects": false
+}
