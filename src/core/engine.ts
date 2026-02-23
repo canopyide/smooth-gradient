@@ -279,6 +279,25 @@ function triangularNoise(x: number, y: number, seed: number): number {
   return u1 + u2 - 1;
 }
 
+/**
+ * Compute perceptual correction factor for grain applied in linear space.
+ *
+ * The sRGB gamma curve amplifies small linear-space changes at low luminance
+ * (dark values). Without correction, grain produces ±10-20 sRGB levels at
+ * near-black but only ±1 level at mid-tones — the primary cause of banding
+ * in dark gradients.
+ *
+ * This scales grain by sqrt(luminance / 0.18) capped at 1, normalising so
+ * that mid-gray (0.18) is unchanged while dark areas are damped.
+ */
+function perceptualGrainScale(color: LinearRgba): number {
+  const luminance = Math.max(
+    0.0001,
+    0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b,
+  );
+  return Math.min(1, Math.sqrt(luminance / 0.18));
+}
+
 function applyGrain(
   color: LinearRgba,
   grain: PreparedGrain | null,
@@ -292,9 +311,10 @@ function applyGrain(
   const scale = grain.scale;
   const sx = x * scale;
   const sy = y * scale;
+  const pScale = perceptualGrainScale(color);
 
   if (grain.monochrome) {
-    const n = triangularNoise(sx, sy, grain.seed) * grain.amount;
+    const n = triangularNoise(sx, sy, grain.seed) * grain.amount * pScale;
     return clampLinearRgba({
       r: color.r + n,
       g: color.g + n,
@@ -303,9 +323,9 @@ function applyGrain(
     });
   }
 
-  const nr = triangularNoise(sx + 13.1, sy + 7.7, grain.seed) * grain.amount;
-  const ng = triangularNoise(sx + 29.3, sy + 19.1, grain.seed + 1) * grain.amount;
-  const nb = triangularNoise(sx + 47.9, sy + 31.3, grain.seed + 2) * grain.amount;
+  const nr = triangularNoise(sx + 13.1, sy + 7.7, grain.seed) * grain.amount * pScale;
+  const ng = triangularNoise(sx + 29.3, sy + 19.1, grain.seed + 1) * grain.amount * pScale;
+  const nb = triangularNoise(sx + 47.9, sy + 31.3, grain.seed + 2) * grain.amount * pScale;
 
   return clampLinearRgba({
     r: color.r + nr,
@@ -313,6 +333,39 @@ function applyGrain(
     b: color.b + nb,
     a: color.a,
   });
+}
+
+/**
+ * Compute grain noise in sRGB space (perceptually uniform).
+ *
+ * Returns noise values to be added directly to sRGB [0-255] float channels.
+ * The amount parameter is interpreted as a fraction of the sRGB range, so
+ * amount=0.004 produces ±1.0 sRGB levels of noise regardless of pixel
+ * brightness.
+ */
+function computeGrainSrgb(
+  grain: PreparedGrain | null,
+  x: number,
+  y: number,
+): { r: number; g: number; b: number } | null {
+  if (!grain) {
+    return null;
+  }
+
+  const sx = x * grain.scale;
+  const sy = y * grain.scale;
+  const amplitude = grain.amount * 255;
+
+  if (grain.monochrome) {
+    const n = triangularNoise(sx, sy, grain.seed) * amplitude;
+    return { r: n, g: n, b: n };
+  }
+
+  return {
+    r: triangularNoise(sx + 13.1, sy + 7.7, grain.seed) * amplitude,
+    g: triangularNoise(sx + 29.3, sy + 19.1, grain.seed + 1) * amplitude,
+    b: triangularNoise(sx + 47.9, sy + 31.3, grain.seed + 2) * amplitude,
+  };
 }
 
 function blendChannel(
@@ -418,7 +471,6 @@ export function renderBackgroundPixels(
         accumulated = compositeLinear(accumulated, sampled, layer.blendMode);
       }
 
-      accumulated = applyGrain(accumulated, resolved.grain, x, y);
       accumulated = clampLinearRgba(accumulated);
 
       const ditherNoise =
@@ -426,9 +478,20 @@ export function renderBackgroundPixels(
           ? 0
           : getDitherValue(px, py, resolved.ditherMode, resolved.ditherAmplitude);
 
-      const sR = linearToSrgb8(accumulated.r);
-      const sG = linearToSrgb8(accumulated.g);
-      const sB = linearToSrgb8(accumulated.b);
+      // Convert to sRGB float (do NOT round yet — dither first)
+      let sR = linearToSrgb8(accumulated.r);
+      let sG = linearToSrgb8(accumulated.g);
+      let sB = linearToSrgb8(accumulated.b);
+
+      // Apply global grain in sRGB space (perceptually uniform).
+      // This avoids the massive sRGB-level jumps that linear-space grain
+      // creates in dark regions due to the sRGB gamma curve.
+      const grainNoise = computeGrainSrgb(resolved.grain, x, y);
+      if (grainNoise) {
+        sR += grainNoise.r;
+        sG += grainNoise.g;
+        sB += grainNoise.b;
+      }
 
       pixelData[index] = quantizeChannel(sR + ditherNoise);
       pixelData[index + 1] = quantizeChannel(sG + ditherNoise);

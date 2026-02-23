@@ -80,38 +80,32 @@ export function createVignetteNoiseBackgroundArgs(
   const preset = options.preset ?? "video";
 
   const baseColor = options.baseColor ?? "#0d0d0e";
-  const baseDarken = clamp01(options.baseDarken ?? (preset === "still" ? 0.14 : 0.2));
+  const baseDarken = clamp01(options.baseDarken ?? (preset === "still" ? 0.10 : 0.14));
   const colorShift = clamp01(options.colorShift ?? 1);
   const baseFloor = mixHex(baseColor, "#070708", baseDarken);
   const minDim = Math.min(width, height);
 
-  const blur = options.blur ?? Math.round(minDim * 0.30);
+  // Blur sized to cover roughly half the short dimension from each edge,
+  // so the vignette extends well into the interior (CSS inner-SDF approach).
+  const blur = options.blur ?? Math.round(minDim * 0.55);
   const radius = options.radius ?? Math.round(minDim * 0.06);
 
   const edgeShadowIntensity =
-    options.edgeShadowIntensity ?? (preset === "still" ? 0.5 : 0.56);
+    options.edgeShadowIntensity ?? (preset === "still" ? 0.45 : 0.50);
   const cornerShadowIntensity =
-    options.cornerShadowIntensity ?? (preset === "still" ? 0.2 : 0.24);
+    options.cornerShadowIntensity ?? (preset === "still" ? 0.18 : 0.22);
 
   const grainAmount =
     options.grainAmount ?? (preset === "still" ? 0.0028 : 0.0036);
   const grainSeed = options.grainSeed ?? 0;
 
-  const warmCenter = mixHex(
-    baseFloor,
-    "#20130f",
-    (preset === "still" ? 0.14 : 0.11) * colorShift,
-  );
-  const coolEdge = mixHex(
-    baseFloor,
-    "#0b1623",
-    (preset === "still" ? 0.30 : 0.26) * colorShift,
-  );
-  const deepEdge = mixHex(
-    baseFloor,
-    "#070b11",
-    (preset === "still" ? 0.45 : 0.4) * colorShift,
-  );
+  // For multiply-blend vignette layers, stop colors are "preservation factors":
+  // white (~1.0) preserves the base colour; darker values darken it more.
+  // Subtle tints (warm centre, cool edges) give the vignette colour character.
+  const vigCenter = mixHex("#fefefe", "#fef4ee", 0.6 * colorShift);
+  const vigMid = mixHex("#d8d8dc", "#d0ccd8", 0.4 * colorShift);
+  const vigEdge = mixHex("#a8a8b0", "#98a0b8", 0.5 * colorShift);
+  const vigDeep = mixHex("#808088", "#707888", 0.5 * colorShift);
 
   return {
     preset,
@@ -130,30 +124,30 @@ export function createVignetteNoiseBackgroundArgs(
       monochrome: true,
     },
     layers: [
-      // Broad asymmetric box vignette: primary edge sculpting.
+      // Primary squircle vignette (Lp norm, p=5): smooth screen-shaped edge
+      // sculpting without the C¹-discontinuity ridge artifacts of a box SDF.
+      // Radial: t=0 at centre (position 0), t=1 at edge (position 1).
       {
-        type: "box",
+        type: "radial",
         blendMode: "multiply",
-        opacity: 0.62,
-        x: 0,
-        y: 0,
-        width,
-        height,
-        radius,
-        spread: Math.round(minDim * 0.01),
-        blur,
-        inset: true,
-        offsetX: Math.round(-width * 0.01),
-        offsetY: Math.round(-height * 0.015),
+        opacity: 0.35,
+        centerX: width * 0.49 + Math.round(-width * 0.01),
+        centerY: height * 0.49 + Math.round(-height * 0.015),
+        radiusX: width * 0.58,
+        radiusY: height * 0.58,
+        innerRadius: 0.30,
+        outerRadius: 1.20,
+        falloff: 1.3,
+        power: 5,
         stops: [
-          { position: 0, color: warmCenter },
-          { position: 0.58, color: baseFloor },
-          { position: 1, color: coolEdge },
+          { position: 0, color: vigCenter },
+          { position: 0.55, color: vigMid },
+          { position: 1, color: vigEdge },
         ],
         colorSpace: "oklab",
         shadow: {
-          startIntensity: edgeShadowIntensity * 0.65,
-          endIntensity: 0.04,
+          startIntensity: 0,
+          endIntensity: edgeShadowIntensity * 0.20,
           curve: 1.2,
         },
         grain: {
@@ -163,30 +157,28 @@ export function createVignetteNoiseBackgroundArgs(
           monochrome: true,
         },
       },
-      // Secondary tighter box layer to avoid a single mechanical falloff curve.
+      // Secondary tighter squircle layer with offset for asymmetry.
       {
-        type: "box",
+        type: "radial",
         blendMode: "multiply",
-        opacity: 0.46,
-        x: 0,
-        y: 0,
-        width,
-        height,
-        radius: Math.round(minDim * 0.045),
-        spread: 0,
-        blur: Math.round(minDim * 0.19),
-        inset: true,
-        offsetX: Math.round(width * 0.015),
-        offsetY: Math.round(height * 0.02),
+        opacity: 0.28,
+        centerX: width * 0.51 + Math.round(width * 0.015),
+        centerY: height * 0.51 + Math.round(height * 0.02),
+        radiusX: width * 0.52,
+        radiusY: height * 0.52,
+        innerRadius: 0.25,
+        outerRadius: 1.15,
+        falloff: 1.5,
+        power: 5,
         stops: [
-          { position: 0, color: baseFloor },
-          { position: 0.66, color: coolEdge },
-          { position: 1, color: deepEdge },
+          { position: 0, color: vigMid },
+          { position: 0.6, color: vigEdge },
+          { position: 1, color: vigDeep },
         ],
         colorSpace: "oklab",
         shadow: {
-          startIntensity: edgeShadowIntensity,
-          endIntensity: 0.08,
+          startIntensity: 0,
+          endIntensity: edgeShadowIntensity * 0.25,
           curve: 1.6,
         },
         grain: {
@@ -196,11 +188,11 @@ export function createVignetteNoiseBackgroundArgs(
           monochrome: true,
         },
       },
-      // Off-axis radial to break symmetry and keep focus up-left.
+      // Off-axis elliptical radial to break symmetry and keep focus up-left.
       {
         type: "radial",
         blendMode: "multiply",
-        opacity: 0.5,
+        opacity: 0.25,
         centerX: width * 0.46,
         centerY: height * 0.42,
         radiusX: width * 0.7,
@@ -209,14 +201,14 @@ export function createVignetteNoiseBackgroundArgs(
         outerRadius: 1.16,
         falloff: 1.35,
         stops: [
-          { position: 0, color: warmCenter },
-          { position: 0.72, color: coolEdge },
-          { position: 1, color: deepEdge },
+          { position: 0, color: vigCenter },
+          { position: 0.72, color: vigEdge },
+          { position: 1, color: vigDeep },
         ],
         colorSpace: "oklab",
         shadow: {
           startIntensity: 0,
-          endIntensity: cornerShadowIntensity * 0.78,
+          endIntensity: cornerShadowIntensity * 0.20,
           curve: 1.4,
         },
         grain: {
@@ -230,7 +222,7 @@ export function createVignetteNoiseBackgroundArgs(
       {
         type: "radial",
         blendMode: "multiply",
-        opacity: 0.42,
+        opacity: 0.20,
         centerX: width * 0.56,
         centerY: height * 0.54,
         radiusX: width * 0.6,
@@ -239,14 +231,14 @@ export function createVignetteNoiseBackgroundArgs(
         outerRadius: 1.22,
         falloff: 2.9,
         stops: [
-          { position: 0, color: baseFloor },
-          { position: 0.78, color: coolEdge },
-          { position: 1, color: deepEdge },
+          { position: 0, color: vigMid },
+          { position: 0.78, color: vigEdge },
+          { position: 1, color: vigDeep },
         ],
         colorSpace: "oklab",
         shadow: {
           startIntensity: 0,
-          endIntensity: cornerShadowIntensity,
+          endIntensity: cornerShadowIntensity * 0.25,
           curve: 2.3,
         },
         grain: {
@@ -321,23 +313,23 @@ export function createSignatureBackgroundArgs(
     },
     layers: [
       {
-        type: "box",
-        x: 0,
-        y: 0,
-        width,
-        height,
-        radius: 72,
-        spread: 10,
-        blur: 310,
-        inset: true,
+        type: "radial",
+        centerX: width * 0.5,
+        centerY: height * 0.5,
+        radiusX: width * 0.56,
+        radiusY: height * 0.56,
+        innerRadius: 0.25,
+        outerRadius: 1.18,
+        falloff: 1.35,
+        power: 5,
         colors: {
           start: baseColor,
           end: baseColor,
         },
         colorSpace: "oklab",
         shadow: {
-          startIntensity: 0.36,
-          endIntensity: 0.02,
+          startIntensity: 0.02,
+          endIntensity: 0.36,
           curve: 1.35,
         },
         opacity: 0.86,

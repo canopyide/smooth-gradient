@@ -63,6 +63,11 @@ export interface RadialGradientLayer extends BackgroundLayerBase {
   innerRadius?: number;
   outerRadius?: number;
   falloff?: number;
+  /** Lp-norm exponent controlling the shape of the distance field.
+   *  2 = ellipse (default), 4–6 = squircle, higher = more rectangular.
+   *  Values > 2 produce C∞-smooth rectangular vignettes without the
+   *  diagonal seam artifacts of a true rectangular SDF. */
+  power?: number;
 }
 
 export interface BoxGradientLayer extends BackgroundLayerBase {

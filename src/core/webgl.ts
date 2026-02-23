@@ -82,6 +82,21 @@ float clamp01(float value) {
   return clamp(value, 0.0, 1.0);
 }
 
+// Abramowitz & Stegun approximation 7.1.26 — max error < 1.5e-7.
+float erfApprox(float x) {
+  float ax = abs(x);
+  float t = 1.0 / (1.0 + 0.3275911 * ax);
+  float y = 1.0 - ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t
+                     - 0.284496736) * t + 0.254829592) * t * exp(-ax * ax);
+  return sign(x) * y;
+}
+
+// Gaussian CDF shadow matching CSS box-shadow spec (sigma = blur / 2).
+float gaussianShadow(float sdf, float blur) {
+  float sigma = blur / 2.0;
+  return 0.5 * (1.0 + erfApprox(sdf / (sigma * 1.41421356)));
+}
+
 float ign(vec2 p) {
   float dotv = p.x * 0.06711056 + p.y * 0.00583715;
   return fract(52.9829189 * fract(dotv));
@@ -255,7 +270,15 @@ vec2 sampleLayerProgress(int layerIndex, vec2 designPx) {
     vec2 center = radial1.xy;
     vec2 radius = vec2(max(EPS, radial1.z), max(EPS, radial1.w));
     vec2 delta = (designPx - center) / radius;
-    float distanceValue = length(delta);
+
+    // Lp norm: p=2 is standard ellipse, p>2 gives squircle shapes.
+    float p = radial2.w;
+    float distanceValue;
+    if (p <= 2.01 && p >= 1.99) {
+      distanceValue = length(delta);
+    } else {
+      distanceValue = pow(pow(abs(delta.x), p) + pow(abs(delta.y), p), 1.0 / p);
+    }
 
     float innerRadius = radial2.x;
     float outerRadius = radial2.y;
@@ -268,32 +291,51 @@ vec2 sampleLayerProgress(int layerIndex, vec2 designPx) {
 
   vec4 box1 = uLayerBox1[layerIndex];
   vec4 box2 = uLayerBox2[layerIndex];
-  float sdf = signedDistanceRoundedRect(designPx, box1, box2.x);
 
+  float outerRadius = box2.x;
   float spread = box2.y;
   float blur = max(0.0, box2.z);
   bool inset = box2.w > 0.5;
 
   if (inset) {
-    float insideDistance = -sdf + spread;
-    if (insideDistance <= 0.0) {
+    // Outer clip
+    float outerSdf = signedDistanceRoundedRect(designPx, box1, outerRadius);
+    if (outerSdf > 0.0) {
       return vec2(0.0, 0.0);
     }
-    if (blur <= EPS) {
-      return vec2(1.0, 1.0);
+
+    // Inner contracted "hole" (CSS convention: positive spread shrinks hole)
+    float innerW = max(0.0, box1.z - 2.0 * spread);
+    float innerH = max(0.0, box1.w - 2.0 * spread);
+    if (innerW <= 0.0 || innerH <= 0.0) {
+      return vec2(0.0, 1.0);
     }
-    return vec2(clamp01(insideDistance / blur), 1.0);
+    float innerR = max(0.0, outerRadius - spread);
+    vec4 innerRect = vec4(box1.x + spread, box1.y + spread, innerW, innerH);
+    float innerSdf = signedDistanceRoundedRect(designPx, innerRect, innerR);
+
+    if (blur <= EPS) {
+      return vec2(innerSdf < 0.0 ? 1.0 : 0.0, 1.0);
+    }
+
+    float rawShadow = gaussianShadow(innerSdf, blur);
+    return vec2(1.0 - rawShadow, 1.0);
   }
 
-  float outsideDistance = sdf - spread;
-  if (outsideDistance <= 0.0) {
+  // Outer shadow
+  float sdf = signedDistanceRoundedRect(designPx, box1, outerRadius);
+  if (sdf <= 0.0) {
     return vec2(0.0, 0.0);
   }
   if (blur <= EPS) {
-    return vec2(1.0, 1.0);
+    return vec2(sdf <= spread ? 0.0 : 0.0, sdf <= spread ? 1.0 : 0.0);
   }
-
-  return vec2(clamp01(outsideDistance / blur), 1.0);
+  float d = sdf - spread;
+  float rawAlpha = 1.0 - gaussianShadow(d, blur);
+  if (rawAlpha < 0.001) {
+    return vec2(0.0, 0.0);
+  }
+  return vec2(1.0 - rawAlpha, 1.0);
 }
 
 vec4 applyShadow(vec4 color, int layerIndex, float t) {
@@ -307,6 +349,11 @@ vec4 applyShadow(vec4 color, int layerIndex, float t) {
   return vec4(color.rgb * multiplier, color.a);
 }
 
+float perceptualGrainScale(vec4 color) {
+  float luminance = max(0.0001, 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b);
+  return min(1.0, sqrt(luminance / 0.18));
+}
+
 vec4 applyGrain(vec4 color, vec2 designPx, vec4 grain) {
   float amount = grain.x;
   if (amount <= 0.0) {
@@ -317,15 +364,16 @@ vec4 applyGrain(vec4 color, vec2 designPx, vec4 grain) {
   float seed = grain.z;
   float monochrome = grain.w;
   vec2 scaled = designPx * scale;
+  float pScale = perceptualGrainScale(color);
 
   if (monochrome > 0.5) {
-    float n = triangularNoise(scaled, seed) * amount;
+    float n = triangularNoise(scaled, seed) * amount * pScale;
     return clampLinearColor(vec4(color.r + n, color.g + n, color.b + n, color.a));
   }
 
-  float nr = triangularNoise(scaled + vec2(13.1, 7.7), seed) * amount;
-  float ng = triangularNoise(scaled + vec2(29.3, 19.1), seed + 1.0) * amount;
-  float nb = triangularNoise(scaled + vec2(47.9, 31.3), seed + 2.0) * amount;
+  float nr = triangularNoise(scaled + vec2(13.1, 7.7), seed) * amount * pScale;
+  float ng = triangularNoise(scaled + vec2(29.3, 19.1), seed + 1.0) * amount * pScale;
+  float nb = triangularNoise(scaled + vec2(47.9, 31.3), seed + 2.0) * amount * pScale;
 
   return clampLinearColor(vec4(color.r + nr, color.g + ng, color.b + nb, color.a));
 }
@@ -401,12 +449,6 @@ float computeDitherNoise(vec2 physicalPx) {
   return (n1 + n2 - 1.0) * uDitherAmplitude;
 }
 
-float quantizeLinearWithDither(float linearValue, float ditherNoise) {
-  float srgb8 = linearToSrgb8(linearValue);
-  float quantized = clamp(floor(srgb8 + ditherNoise + 0.5), 0.0, 255.0);
-  return quantized / 255.0;
-}
-
 void main() {
   vec2 physicalPx = floor(gl_FragCoord.xy);
   vec2 scale = vec2(
@@ -444,18 +486,34 @@ void main() {
     accumulated = compositeLinear(accumulated, source, uLayerMeta1[layerIndex].y);
   }
 
-  accumulated = applyGrain(
-    accumulated,
-    designPx,
-    vec4(uGlobalGrainAmount, uGlobalGrainScale, uGlobalGrainSeed, uGlobalGrainMono)
-  );
   accumulated = clampLinearColor(accumulated);
 
   float ditherNoise = computeDitherNoise(physicalPx);
 
-  float outR = quantizeLinearWithDither(accumulated.r, ditherNoise);
-  float outG = quantizeLinearWithDither(accumulated.g, ditherNoise);
-  float outB = quantizeLinearWithDither(accumulated.b, ditherNoise);
+  // Convert to sRGB float first, then apply global grain in sRGB space
+  // (perceptually uniform — avoids massive banding in dark regions).
+  float sR = linearToSrgb8(accumulated.r);
+  float sG = linearToSrgb8(accumulated.g);
+  float sB = linearToSrgb8(accumulated.b);
+
+  if (uGlobalGrainAmount > 0.0) {
+    vec2 gScaled = designPx * uGlobalGrainScale;
+    float gAmp = uGlobalGrainAmount * 255.0;
+    if (uGlobalGrainMono > 0.5) {
+      float gn = triangularNoise(gScaled, uGlobalGrainSeed) * gAmp;
+      sR += gn;
+      sG += gn;
+      sB += gn;
+    } else {
+      sR += triangularNoise(gScaled + vec2(13.1, 7.7), uGlobalGrainSeed) * gAmp;
+      sG += triangularNoise(gScaled + vec2(29.3, 19.1), uGlobalGrainSeed + 1.0) * gAmp;
+      sB += triangularNoise(gScaled + vec2(47.9, 31.3), uGlobalGrainSeed + 2.0) * gAmp;
+    }
+  }
+
+  float outR = clamp(floor(sR + ditherNoise + 0.5), 0.0, 255.0) / 255.0;
+  float outG = clamp(floor(sG + ditherNoise + 0.5), 0.0, 255.0) / 255.0;
+  float outB = clamp(floor(sB + ditherNoise + 0.5), 0.0, 255.0) / 255.0;
   float outA = uOpaque > 0.5
     ? 1.0
     : clamp(floor(accumulated.a * 255.0 + 0.5), 0.0, 255.0) / 255.0;
@@ -691,7 +749,7 @@ function packLayerUniforms(
         radial.innerRadius ?? 0,
         radial.outerRadius ?? 1,
         Math.max(EPSILON, radial.falloff ?? 1),
-        0,
+        radial.power ?? 2,
       );
     } else {
       const box = layer.layer;

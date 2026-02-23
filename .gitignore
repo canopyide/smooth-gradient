@@ -20,6 +20,9 @@ out/
 .nuxt/
 *.tsbuildinfo
 
+# Test output
+test-output/
+
 # OS
 .DS_Store
 Thumbs.db
